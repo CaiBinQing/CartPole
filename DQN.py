@@ -1,7 +1,6 @@
 import math
 import random
 from collections import namedtuple, deque
-from typing import Callable
 
 import numpy as np
 import torch
@@ -46,8 +45,18 @@ class Net(nn.Module):
         return actions_value
 
 
-def default_epsilon(steps_done: int) -> float:
-    return 0.05 + 0.95 * math.exp(-steps_done / 200.)
+# Hyper Parameters
+BATCH_SIZE = 64
+GAMMA = 0.95  # 衰减因子
+MEMORY_SIZE = 100000  # 记忆容量
+TARGET_UPDATE = 30  # 每隔多少轮更新一次 target 网络
+EPS_START = 1.  # 初始探索概率
+EPS_END = 0.05  # 最终探索概率
+EPS_DECAY = 200.  # 探索概率衰减参数
+
+
+def get_epsilon(steps_done: int) -> float:
+    return EPS_END + (EPS_START - EPS_END) * math.exp(-steps_done / EPS_DECAY)
 
 
 class DQN(object):
@@ -55,21 +64,22 @@ class DQN(object):
     DQN agent
     """
 
-    def __init__(self, n_states: int, n_actions: int, batch_size=64, gamma=0.95, memory_size=100000, get_epsilon: Callable[[int], float] = default_epsilon):
+    def __init__(self, n_states: int, n_actions: int, batch_size=BATCH_SIZE, gamma=GAMMA, target_update=TARGET_UPDATE, memory_size=MEMORY_SIZE):
         """
         :param n_states: input
         :param n_actions: output
         :param batch_size:
         :param gamma: 衰减因子
+        :param target_update: 每隔多少轮更新一次 target 网络
         :param memory_size: 记忆容量
         """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = "cpu"  # torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("use device:", self.device)
 
         self.n_actions = n_actions
         self.policy_net = Net(n_states, n_actions).to(self.device)
         self.target_net = Net(n_states, n_actions).to(self.device)
-        self.update_target_net()
+        self._update_target_net()
 
         self.optimizer = optim.Adam(self.policy_net.parameters())
         self.memory = ReplayMemory(memory_size)
@@ -78,45 +88,45 @@ class DQN(object):
 
         self.batch_size = batch_size
         self.gamma = gamma
-        self.get_epsilon = get_epsilon
+        self.target_update = target_update
 
     def preprocess_state(self, state: np.array) -> Tensor:  # (1,n)
         return torch.from_numpy(state).unsqueeze(0).to(device=self.device, dtype=torch.float)
 
-    def select_action(self, state: Tensor) -> Tensor:
+    def select_action(self, state: Tensor) -> int:
         """
         epsilon-greedy policy
-        :param state: Tensor
-        :return: action: Tensor(1,1)
+        :param state: Tensor(1,n)
         """
-        epsilon = self.get_epsilon(self.steps_done)
+        epsilon = get_epsilon(self.steps_done)
         self.steps_done += 1
         if random.random() < epsilon:
-            return torch.tensor([[random.randrange(self.n_actions)]], device=state.device, dtype=torch.long)
+            return random.randrange(self.n_actions)
         else:
             with torch.no_grad():
-                return self.policy_net(state).max(dim=1).indices.view(1, 1)
+                return self.policy_net(state).max(dim=1).indices.item()
 
-    def action(self, state: Tensor) -> Tensor:
+    def action(self, state: Tensor) -> int:
         """
         use target net
         :param state: Tensor(1,n)
-        :return: action: Tensor(1,1)
         """
         with torch.no_grad():
-            return self.target_net(state).max(dim=1).indices.view(1, 1)
+            return self.policy_net(state).max(dim=1).indices.item()
 
-    def store_transition(self, state: Tensor, action: Tensor, reward: float, next_state: Tensor):
+    def finish_step(self, state: Tensor, action: int, reward: float, next_state: Tensor):
         """
         :param state: Tensor(1,n)
-        :param action: Tensor(1,1)
+        :param action: int
         :param reward: float
         :param next_state: Tensor(1,n)
         """
         reward = torch.tensor([reward], device=self.device)  # Tensor(1,)
+        action = torch.tensor([[action]], device=self.device)  # Tensor(1,1)
         self.memory.push(state, action, next_state, reward)
+        self._train()
 
-    def train(self):
+    def _train(self):
         if len(self.memory) < self.batch_size:
             return 0
         device = self.device
@@ -158,5 +168,10 @@ class DQN(object):
 
         return loss.item()
 
-    def update_target_net(self):
+    def finish_episode(self, episode: int):
+        # 更新 target 网络
+        if episode % self.target_update == 0:
+            self._update_target_net()
+
+    def _update_target_net(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
