@@ -1,19 +1,19 @@
 import math
 import random
 from collections import namedtuple, deque
+from typing import Callable
 
 import numpy as np
 import torch
-from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch import Tensor
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
 
 class ReplayMemory(object):
-    """记忆体"""
     def __init__(self, capacity: int):
         self.memory = deque(maxlen=capacity)
 
@@ -31,28 +31,23 @@ class Net(nn.Module):
     """
     current_states -> ... -> actions_value
     """
+
     def __init__(self, n_states: int, n_actions: int):
         super(Net, self).__init__()
-        self.fc1 = nn.Linear(n_states, 50)
-        self.fc1.weight.data.normal_(0, 0.1)   # initialization
-        self.fc2 = nn.Linear(50, 50)
-        self.fc2.weight.data.normal_(0, 0.1)   # initialization
-        self.out = nn.Linear(50, n_actions)
-        self.out.weight.data.normal_(0, 0.1)   # initialization
+        self.fc1 = nn.Linear(n_states, 12)
+        self.fc1.weight.data.normal_(0, 0.1)  # initialization
+        self.out = nn.Linear(12, n_actions)
+        self.out.weight.data.normal_(0, 0.1)  # initialization
 
     def forward(self, x):
         x = self.fc1(x)
-        x = F.relu(x)
-        x = self.fc2(x)
         x = F.relu(x)
         actions_value = self.out(x)
         return actions_value
 
 
-# Hyper Parameters
-EPS_START = 1.  # 初始探索概率
-EPS_END = 0.05  # 最终探索概率
-EPS_DECAY = 200  # 探索概率衰减参数
+def default_epsilon(steps_done: int) -> float:
+    return 0.05 + 0.95 * math.exp(-steps_done / 200.)
 
 
 class DQN(object):
@@ -60,13 +55,13 @@ class DQN(object):
     DQN agent
     """
 
-    def __init__(self, n_states: int, n_actions: int, memory_size=100000, batch_size=64, gamma=0.95):
+    def __init__(self, n_states: int, n_actions: int, batch_size=64, gamma=0.95, memory_size=100000, get_epsilon: Callable[[int], float] = default_epsilon):
         """
         :param n_states: input
         :param n_actions: output
-        :param memory_size: 记忆容量
         :param batch_size:
         :param gamma: 衰减因子
+        :param memory_size: 记忆容量
         """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("use device:", self.device)
@@ -76,30 +71,27 @@ class DQN(object):
         self.target_net = Net(n_states, n_actions).to(self.device)
         self.update_target_net()
 
-        self.optimizer = optim.RMSprop(self.policy_net.parameters())
+        self.optimizer = optim.Adam(self.policy_net.parameters())
         self.memory = ReplayMemory(memory_size)
 
         self.steps_done = 0
 
         self.batch_size = batch_size
         self.gamma = gamma
-
-
-    def _next_epsilon(self):
-        epsilon = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * self.steps_done / EPS_DECAY)
-        self.steps_done += 1
-        return epsilon
+        self.get_epsilon = get_epsilon
 
     def preprocess_state(self, state: np.array) -> Tensor:  # (1,n)
         return torch.from_numpy(state).unsqueeze(0).to(device=self.device, dtype=torch.float)
 
-    def select_action(self, state: np.array) -> Tensor:
+    def select_action(self, state: Tensor) -> Tensor:
         """
         epsilon-greedy policy
-        :param state: np.array
+        :param state: Tensor
         :return: action: Tensor(1,1)
         """
-        if random.random() < self._next_epsilon():
+        epsilon = self.get_epsilon(self.steps_done)
+        self.steps_done += 1
+        if random.random() < epsilon:
             return torch.tensor([[random.randrange(self.n_actions)]], device=state.device, dtype=torch.long)
         else:
             with torch.no_grad():
@@ -155,7 +147,7 @@ class DQN(object):
         expected_state_action_values = (next_state_values * self.gamma) + reward_batch  # Tensor(batch_size,)
 
         # Compute Huber loss
-        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
+        loss = F.mse_loss(state_action_values, expected_state_action_values.unsqueeze(1))
 
         # Optimize the model
         self.optimizer.zero_grad()
