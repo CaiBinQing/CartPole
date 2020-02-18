@@ -3,7 +3,8 @@ import itertools
 import gym
 import matplotlib.pyplot as plt
 
-from DQN import *
+# from DQN import *
+from Reinforce import *
 
 
 class CartPoleSolver:
@@ -13,7 +14,8 @@ class CartPoleSolver:
 
         n_states = self.env.observation_space.shape[0]
         n_actions = self.env.action_space.n
-        self.agent = DQN(n_states, n_actions)
+        # self.agent = DQN(n_states, n_actions)
+        self.agent = Reinforce(n_states, n_actions)
 
         self.episode_reward: [float] = []  # 每一轮获得的奖励
         self.reward_means: [float] = []  # 均线
